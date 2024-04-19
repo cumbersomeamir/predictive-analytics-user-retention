@@ -1,63 +1,81 @@
 import pandas as pd
-from datetime import datetime, timedelta
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from datetime import datetime
 
-# Load data from an Excel file
-df = pd.read_excel('/Users/amir/Desktop/own-interpreter/interpret/lib/python3.11/site-packages/mongodb data for clustering.xlsx')
 
-'''Data Processing '''
+'''Data Loading'''
+df = pd.read_excel("/Users/amir/Desktop/own-interpreter/interpret/lib/python3.11/site-packages/mongodb data for clustering.xlsx")
+print(df.head())
+print("The columns are :", df.columns)
 
-# Handling missing values
-# You can choose to fill missing values with a specific value, mean, median or mode, or drop them
-#df.fillna(df.mean(), inplace=True)  # Replace NaN with the mean of each column
+'''Data Cleaning'''
+#Impute missing values for numerical columns with the median
+num_features = df.select_dtypes(include= ['int64', 'float64']).columns.tolist()
+# Replace missing categorical values with the mode
+cat_features = df.select_dtypes(include=['object']).columns.tolist()
 
-# Optionally, drop rows with any NaN values if needed
-df.dropna(inplace=True)
+num_pipeline = Pipeline([
+    ('imputer', SimpleImputer(strategy='median')),
+    ('scaler', StandardScaler())
+])
 
-# Ensuring correct data types
+cat_pipeline = Pipeline([
+    ('imputer', SimpleImputer(strategy='most_frequent')),
+    ('onehot', OneHotEncoder(handle_unknown='ignore'))
+])
+
+preprocessor = ColumnTransformer([
+    ('num', num_pipeline, num_features),
+    ('cat', cat_pipeline, cat_features)
+])
+
+''' Feature Engineering '''
+# Time-based features
 df['createdAt'] = pd.to_datetime(df['createdAt'])
-df['updatedAt'] = pd.to_datetime(df['updatedAt'])
+df['day_of_week'] = df['createdAt'].dt.dayofweek
+df['hour_of_day'] = df['createdAt'].dt.hour
+df['month'] = df['createdAt'].dt.month
 
-# Convert categorical data to category type
-df['Day'] = df['Day'].astype('category')
-df['Month'] = df['Month'].astype('category')
+# Advanced features might include time since last session, session duration, etc.
+# Example: Calculate time since last login for each user
+df.sort_values(by=['username', 'createdAt'], inplace=True)
+df['time_since_last_login'] = df.groupby('username')['createdAt'].diff().apply(lambda x: x.total_seconds()/3600.0)
 
-# Example of removing outliers for a hypothetical numerical column
-# Assuming 'noOfLikes' could have outliers
-q_low = df['noOfLikes'].quantile(0.01)
-q_hi  = df['noOfLikes'].quantile(0.99)
+''' Label Definition '''
+# Calculate the number of sessions per user using 'username' as the identifier
+df['session_count'] = df.groupby('username')['username'].transform('count')
 
-df = df[(df['noOfLikes'] > q_low) & (df['noOfLikes'] < q_hi)]
+# Define the 'retained' status based on session_count and recent activity
+# For example, users with more than 3 sessions and who logged in within the last 24 hours are considered retained
+df['retained'] = (df['session_count'] > 3) & (df['time_since_last_login'] <= 24)
+
+''' Preprocess the Dataset '''
+# Apply the preprocessing pipeline to the DataFrame
+df_processed = preprocessor.fit_transform(df)
+
+# Get feature names from one-hot encoded categorical features
+# Combining original numerical features with new one-hot encoded feature names
+feature_names = num_features + list(preprocessor.named_transformers_['cat'].named_steps['onehot'].get_feature_names_out(cat_features))
+
+# Convert the processed matrix back to a DataFrame
+df_processed = pd.DataFrame(df_processed, columns=feature_names)
+print(df_processed.head())
+
+''' Data Preparation for Model Training '''
+# Assuming you would want to separate features and target label
+X = df_processed.drop('retained', axis=1)  # Drop the target variable to create a features only DataFrame
+y = df['retained']  # Target variable
+
+# If 'retained' became part of the processed DataFrame, use the following instead:
+# X = df_processed.drop(columns='retained')
+# y = df_processed['retained']
+
+print("Features and Labels prepared for model training:")
+print(X.head())
+print(y.head())
 
 
-'''Feature Engineering '''
-
-# Extracting more detailed time-based features
-df['created_hour'] = df['createdAt'].dt.hour
-df['created_weekday'] = df['createdAt'].dt.dayofweek  # Monday=0, Sunday=6
-
-# Time between created and updated dates might be a useful feature
-df['time_delta_days'] = (df['updatedAt'] - df['createdAt']).dt.days
-
-'''Exploratory Data Analysis'''
-
-# Histograms for numerical features
-num_features = ['noOfLikes', 'created_hour', 'time_delta_days']
-df[num_features].hist(bins=15, figsize=(15, 6), layout=(2, 2))
-plt.show()
-
-# Boxplots to check for outliers in numerical features
-plt.figure(figsize=(12, 6))
-df.boxplot(column=['noOfLikes'])
-plt.show()
-
-# Bar plots for categorical data
-cat_features = ['Day', 'Month', 'type']
-for feature in cat_features:
-    plt.figure(figsize=(10, 4))
-    sns.countplot(x=feature, data=df)
-    plt.title(f'Distribution of {feature}')
-    plt.xticks(rotation=45)
-    plt.show()
